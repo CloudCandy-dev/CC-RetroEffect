@@ -8,7 +8,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![AviUtl ExEdit2](https://img.shields.io/badge/AviUtl-ExEdit2_2.00β38a+-orange.svg)]()
-[![Version](https://img.shields.io/badge/Version-1.0.0-green.svg)]()
+[![Version](https://img.shields.io/badge/Version-0.1.0-green.svg)]()
 
 ---
 
