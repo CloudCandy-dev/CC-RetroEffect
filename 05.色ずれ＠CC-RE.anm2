@@ -1,0 +1,131 @@
+--script:luaJIT
+--information:05.色ずれ＠CC-RE
+--label:CC-RetroEffect
+--filter
+--require:2003800
+
+--[[pixelshader@ps_chroma_shift:
+Texture2D tex0 : register(t0);
+SamplerState samp : register(s0);
+
+cbuffer Constants : register(b0) {
+    float4 params[2];
+};
+
+float4 ps_chroma_shift(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
+    float shiftPx   = params[0].x;
+    float cutoffY   = params[0].y;
+    float cutoffI   = params[0].z;
+    float cutoffQ   = params[0].w;
+    float crosstalk = params[1].x;
+    float opacity   = params[1].y;
+    float texW      = params[1].z;
+    float texH      = params[1].w;
+
+    float4 origColor = tex0.Sample(samp, uv);
+    if (origColor.a < 0.001) return origColor;
+    float3 origRGB = origColor.rgb / origColor.a;
+
+    float origY = dot(origRGB, float3(0.299, 0.587, 0.114));
+    float origI = dot(origRGB, float3(0.5959, -0.2746, -0.3213));
+    float origQ = dot(origRGB, float3(0.2115, -0.5227, 0.3112));
+
+    float4 s0, s1, s2, s3, s4;
+
+    // Y channel: 5-tap lowpass at current position
+    // tap spacing = 0.5/cutoff pixels, weights {1,4,7,4,1}/17
+    float dY = 0.5 / max(cutoffY, 0.01) / texW;
+
+    s0 = tex0.Sample(samp, float2(clamp(uv.x - 2.0 * dY, 0.0, 1.0), uv.y));
+    s1 = tex0.Sample(samp, float2(clamp(uv.x - dY, 0.0, 1.0), uv.y));
+    s2 = origColor;
+    s3 = tex0.Sample(samp, float2(clamp(uv.x + dY, 0.0, 1.0), uv.y));
+    s4 = tex0.Sample(samp, float2(clamp(uv.x + 2.0 * dY, 0.0, 1.0), uv.y));
+
+    float Y = 0.0;
+    float wY = 0.0;
+    if (s0.a > 0.001) { Y += dot(s0.rgb / s0.a, float3(0.299, 0.587, 0.114)) * 1.0; wY += 1.0; }
+    if (s1.a > 0.001) { Y += dot(s1.rgb / s1.a, float3(0.299, 0.587, 0.114)) * 4.0; wY += 4.0; }
+    if (s2.a > 0.001) { Y += dot(s2.rgb / s2.a, float3(0.299, 0.587, 0.114)) * 7.0; wY += 7.0; }
+    if (s3.a > 0.001) { Y += dot(s3.rgb / s3.a, float3(0.299, 0.587, 0.114)) * 4.0; wY += 4.0; }
+    if (s4.a > 0.001) { Y += dot(s4.rgb / s4.a, float3(0.299, 0.587, 0.114)) * 1.0; wY += 1.0; }
+    Y = (wY > 0.5) ? Y / wY : origY;
+
+    // I channel: shift + 5-tap lowpass
+    float bI = uv.x + shiftPx / texW;
+    float dI = 0.5 / max(cutoffI, 0.001) / texW;
+
+    s0 = tex0.Sample(samp, float2(clamp(bI - 2.0 * dI, 0.0, 1.0), uv.y));
+    s1 = tex0.Sample(samp, float2(clamp(bI - dI, 0.0, 1.0), uv.y));
+    s2 = tex0.Sample(samp, float2(clamp(bI, 0.0, 1.0), uv.y));
+    s3 = tex0.Sample(samp, float2(clamp(bI + dI, 0.0, 1.0), uv.y));
+    s4 = tex0.Sample(samp, float2(clamp(bI + 2.0 * dI, 0.0, 1.0), uv.y));
+
+    float iI = 0.0;
+    float wI = 0.0;
+    if (s0.a > 0.001) { iI += dot(s0.rgb / s0.a, float3(0.5959, -0.2746, -0.3213)) * 1.0; wI += 1.0; }
+    if (s1.a > 0.001) { iI += dot(s1.rgb / s1.a, float3(0.5959, -0.2746, -0.3213)) * 4.0; wI += 4.0; }
+    if (s2.a > 0.001) { iI += dot(s2.rgb / s2.a, float3(0.5959, -0.2746, -0.3213)) * 7.0; wI += 7.0; }
+    if (s3.a > 0.001) { iI += dot(s3.rgb / s3.a, float3(0.5959, -0.2746, -0.3213)) * 4.0; wI += 4.0; }
+    if (s4.a > 0.001) { iI += dot(s4.rgb / s4.a, float3(0.5959, -0.2746, -0.3213)) * 1.0; wI += 1.0; }
+    float I = (wI > 0.5) ? iI / wI : origI;
+
+    // Q channel: shift + 5-tap lowpass
+    float bQ = uv.x - shiftPx * 0.5 / texW;
+    float dQ = 0.5 / max(cutoffQ, 0.001) / texW;
+
+    s0 = tex0.Sample(samp, float2(clamp(bQ - 2.0 * dQ, 0.0, 1.0), uv.y));
+    s1 = tex0.Sample(samp, float2(clamp(bQ - dQ, 0.0, 1.0), uv.y));
+    s2 = tex0.Sample(samp, float2(clamp(bQ, 0.0, 1.0), uv.y));
+    s3 = tex0.Sample(samp, float2(clamp(bQ + dQ, 0.0, 1.0), uv.y));
+    s4 = tex0.Sample(samp, float2(clamp(bQ + 2.0 * dQ, 0.0, 1.0), uv.y));
+
+    float qQ = 0.0;
+    float wQ = 0.0;
+    if (s0.a > 0.001) { qQ += dot(s0.rgb / s0.a, float3(0.2115, -0.5227, 0.3112)) * 1.0; wQ += 1.0; }
+    if (s1.a > 0.001) { qQ += dot(s1.rgb / s1.a, float3(0.2115, -0.5227, 0.3112)) * 4.0; wQ += 4.0; }
+    if (s2.a > 0.001) { qQ += dot(s2.rgb / s2.a, float3(0.2115, -0.5227, 0.3112)) * 7.0; wQ += 7.0; }
+    if (s3.a > 0.001) { qQ += dot(s3.rgb / s3.a, float3(0.2115, -0.5227, 0.3112)) * 4.0; wQ += 4.0; }
+    if (s4.a > 0.001) { qQ += dot(s4.rgb / s4.a, float3(0.2115, -0.5227, 0.3112)) * 1.0; wQ += 1.0; }
+    float Q = (wQ > 0.5) ? qQ / wQ : origQ;
+
+    // Vertical crosstalk
+    if (crosstalk > 0.001) {
+        float2 upUV = float2(uv.x, clamp(uv.y - 1.0 / texH, 0.0, 1.0));
+        float2 downUV = float2(uv.x, clamp(uv.y + 1.0 / texH, 0.0, 1.0));
+        float4 cUp = tex0.Sample(samp, upUV);
+        float4 cDown = tex0.Sample(samp, downUV);
+        float3 rUp = (cUp.a > 0.001) ? cUp.rgb / cUp.a : origRGB;
+        float3 rDown = (cDown.a > 0.001) ? cDown.rgb / cDown.a : origRGB;
+        I = lerp(I, (dot(rUp, float3(0.5959, -0.2746, -0.3213)) + dot(rDown, float3(0.5959, -0.2746, -0.3213))) * 0.5, crosstalk);
+        Q = lerp(Q, (dot(rUp, float3(0.2115, -0.5227, 0.3112)) + dot(rDown, float3(0.2115, -0.5227, 0.3112))) * 0.5, crosstalk);
+    }
+
+    // YIQ -> RGB
+    float3 processed = float3(
+        Y + 0.9563 * I + 0.6210 * Q,
+        Y - 0.2721 * I - 0.6474 * Q,
+        Y - 1.1070 * I + 1.7046 * Q
+    );
+    processed = saturate(processed);
+
+    float3 result = lerp(origRGB, processed, opacity);
+    return float4(result * origColor.a, origColor.a);
+}
+]]
+
+--track@shift_px:水平色ズレ量,0,15,15
+--track@cutoff_y:輝度帯域,0.01,1.00,0.07,0.01
+--track@cutoff_i:色差I帯域,0.001,0.100,0.009,0.001
+--track@cutoff_q:色差Q帯域,0.001,0.100,0.100,0.001
+--track@crosstalk:縦方向色滲み,0.00,0.95,0.40,0.01
+--track@opacity:透明度,0,100,100
+
+-- スケーリング
+local _scale = obj.h / 480.0
+local shift_scaled = shift_px * _scale
+
+obj.pixelshader("ps_chroma_shift", "object", "object", {
+    shift_scaled, cutoff_y, cutoff_i, cutoff_q,
+    crosstalk, opacity / 100.0, obj.w, obj.h
+}, "copy", "clamp")

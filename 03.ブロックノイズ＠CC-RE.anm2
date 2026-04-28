@@ -1,0 +1,96 @@
+--script:luaJIT
+--information:03.ブロックノイズ＠CC-RE
+--label:CC-RetroEffect
+--filter
+--require:2003800
+
+--[[pixelshader@ps_block_noise:
+Texture2D tex0 : register(t0);
+SamplerState samp : register(s0);
+
+cbuffer Constants : register(b0) {
+    float4 params[2];
+};
+
+float hash(float2 p) {
+    float3 p3 = frac(float3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return frac((p3.x + p3.y) * p3.z);
+}
+
+float4 ps_block_noise(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
+    float quality   = params[0].x;
+    float blockSize = params[0].y;
+    float density   = params[0].z;
+    float effFrame  = params[0].w;
+    float texW      = params[1].x;
+    float texH      = params[1].y;
+
+    float4 color = tex0.Sample(samp, uv);
+    if (color.a < 0.001) return color;
+
+    // ブロックグリッドへの量子化
+    float2 texSize = float2(texW, texH);
+    float2 blockUV = floor(uv * texSize / blockSize) * blockSize / texSize;
+
+    // ブロックの出現判定（フレーム番号でシード変化）
+    float blockHash = hash(blockUV * 1000.0 + float2(effFrame * 0.37, effFrame * 0.71));
+    bool isAffected = blockHash < density;
+
+    if (isAffected) {
+        // ブロック中央のサンプル
+        float2 blockCenter = blockUV + blockSize * 0.5 / texSize;
+        float4 blockColor = tex0.Sample(samp, blockCenter);
+
+        if (blockColor.a > 0.001) {
+            // 乗算済みα解除
+            float3 origRGB = color.rgb / color.a;
+            float3 blockRGB = blockColor.rgb / blockColor.a;
+
+            // 圧縮品質に応じた色の量子化
+            float step_val = lerp(32.0, 1.0, quality / 100.0);
+            blockRGB = floor(blockRGB * 255.0 / step_val + 0.5) * step_val / 255.0;
+            blockRGB = saturate(blockRGB);
+
+            // 元画像と輝度合成:
+            // ブロック色のベースに元画像の輝度差分をブレンドし
+            // ディテールを残す（完全ベタ塗りにしない）
+            float origLuma  = dot(origRGB,  float3(0.299, 0.587, 0.114));
+            float blockLuma = dot(blockRGB, float3(0.299, 0.587, 0.114));
+            float lumaDiff  = origLuma - blockLuma;
+
+            // 品質が低いほどブレンド弱（ベタ塗り寄り）、高いほど元画像寄り
+            float blendStr = lerp(0.3, 0.8, quality / 100.0);
+            float3 rgb = blockRGB + lumaDiff * blendStr;
+            rgb = saturate(rgb);
+
+            // 乗算済みαに戻す
+            return float4(rgb * color.a, color.a);
+        }
+    }
+
+    return color;
+}
+]]
+
+--track@quality:圧縮品質,1,100,70
+--track@block_size:ブロックサイズ,4,16,6
+--track@density:ノイズ密度,0.0,1.0,0.2,0.01
+--check@time_vary:時間変動,true
+--track@time_speed:変化速度,0.1,5.0,1.0,0.1
+
+-- スケーリング
+local _scale = obj.h / 480.0
+local block_scaled = block_size * _scale
+
+-- 時間変動制御
+local eff_frame = time_vary and math.floor(obj.time * obj.framerate) or 0
+if CC_RE_QUANTIZED_FRAME then
+    eff_frame = time_vary and CC_RE_QUANTIZED_FRAME or 0
+end
+eff_frame = eff_frame * time_speed
+
+obj.pixelshader("ps_block_noise", "object", "object", {
+    quality, block_scaled, density, eff_frame,
+    obj.w, obj.h, 0, 0
+}, "copy", "clamp")

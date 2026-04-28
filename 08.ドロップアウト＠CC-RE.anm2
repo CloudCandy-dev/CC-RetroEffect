@@ -1,0 +1,124 @@
+--script:luaJIT
+--information:08.ドロップアウト＠CC-RE
+--label:CC-RetroEffect
+--filter
+--require:2003800
+
+--[[pixelshader@ps_dropout:
+Texture2D tex0 : register(t0);
+SamplerState samp : register(s0);
+
+cbuffer Constants : register(b0) {
+    float4 params[18];
+};
+
+float hash(float2 p) {
+    float3 p3 = frac(float3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return frac((p3.x + p3.y) * p3.z);
+}
+
+float4 ps_dropout(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
+    float dropCount = params[0].x;
+    float colorMode = params[0].z;
+    float effFrame  = params[0].w;
+    float texW      = params[1].x;
+    float texH      = params[1].y;
+
+    float4 color = tex0.Sample(samp, uv);
+
+    int count = min((int)dropCount, 16);
+    float pixelH = 1.0 / texH;
+
+    // Fixed 16 iterations (compile-time constant bound)
+    for (int i = 0; i < 16; i++) {
+        if (i >= count) break;
+        float dy    = params[2 + i].x;
+        float dx    = params[2 + i].y;
+        float dlen  = params[2 + i].z;
+        float dint  = params[2 + i].w;
+
+        // Y座標が一致するか（1～2ピクセル幅）
+        if (abs(uv.y - dy) < pixelH * 1.5) {
+            // X範囲内判定
+            if (uv.x >= dx && uv.x <= dx + dlen) {
+                // エッジのフェードアウト
+                float edgeFade = smoothstep(0.0, 0.03, uv.x - dx)
+                               * smoothstep(0.0, 0.03, (dx + dlen) - uv.x);
+
+                // ノイズ色の生成
+                float noiseVal = hash(pos.xy + effFrame + float(i) * 17.0);
+                float3 noiseColor;
+                if (colorMode < 0.5) {
+                    // 白
+                    noiseColor = float3(1.0, 1.0, 1.0);
+                } else if (colorMode < 1.5) {
+                    // 黒
+                    noiseColor = float3(0.0, 0.0, 0.0);
+                } else {
+                    // ランダム
+                    noiseColor = float3(noiseVal, noiseVal, noiseVal);
+                }
+
+                // 乗算済みα空間でのブレンド
+                float3 blended = lerp(color.rgb, noiseColor * color.a, dint * edgeFade);
+                color = float4(blended, color.a);
+            }
+        }
+    }
+
+    return color;
+}
+]]
+
+--track@drop_count:傷の数,0,16,2
+--track@max_length:傷の最大長,10,200,80
+--track@drop_intensity:傷の激しさ,0.0,1.0,0.8,0.01
+--select@color_mode:傷の色=2,白=0,黒=1,ランダム=2
+--check@time_vary:時間変動,true
+--track@time_speed:変化速度,0.1,5.0,1.0,0.1
+
+-- スケーリング
+local _scale = obj.h / 480.0
+
+-- 時間変動
+local eff_frame = time_vary and math.floor(obj.time * obj.framerate) or 0
+if CC_RE_QUANTIZED_FRAME then
+    eff_frame = time_vary and CC_RE_QUANTIZED_FRAME or 0
+end
+eff_frame = eff_frame * time_speed
+
+-- ドロップアウト位置の計算（Lua側）
+local count = math.min(math.floor(drop_count), 16)
+math.randomseed(eff_frame * 73856093 + obj.effect_id * 19349663)
+
+local dropout_data = {}
+for i = 1, count do
+    local y = math.random() -- 正規化Y座標 (0-1)
+    local x_start = math.random() * 0.7 -- X開始位置
+    local len = (math.random() * max_length * _scale) / obj.w -- 正規化長さ
+    local intensity = drop_intensity * (0.5 + math.random() * 0.5)
+    table.insert(dropout_data, y)
+    table.insert(dropout_data, x_start)
+    table.insert(dropout_data, len)
+    table.insert(dropout_data, intensity)
+end
+
+-- 未使用スロットをゼロ埋め
+for i = count + 1, 16 do
+    table.insert(dropout_data, 0)
+    table.insert(dropout_data, 0)
+    table.insert(dropout_data, 0)
+    table.insert(dropout_data, 0)
+end
+
+-- 定数配列を構築
+local constants = {
+    count, drop_intensity, color_mode, eff_frame,
+    obj.w, obj.h, 0, 0
+}
+for _, v in ipairs(dropout_data) do
+    table.insert(constants, v)
+end
+
+obj.pixelshader("ps_dropout", "object", "object", constants, "copy", "clamp")

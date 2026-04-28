@@ -1,0 +1,115 @@
+--script:luaJIT
+--information:07.ヘッドスイッチングノイズ＠CC-RE
+--label:CC-RetroEffect
+--filter
+--require:2003800
+
+--[[pixelshader@ps_head_switch:
+Texture2D tex0 : register(t0);
+SamplerState samp : register(s0);
+
+cbuffer Constants : register(b0) {
+    float4 params[3];
+};
+
+float hash(float2 p) {
+    float3 p3 = frac(float3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return frac((p3.x + p3.y) * p3.z);
+}
+
+float4 ps_head_switch(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
+    float noiseHeight   = params[0].x;
+    float distortion    = params[0].y;
+    float noiseDensity  = params[0].z;
+    float colorCorrupt  = params[0].w;
+    float fluctuation   = params[1].x;
+    float intensity     = params[1].y;
+    float effFrame      = params[1].z;
+    float texW          = params[2].x;
+    float texH          = params[2].y;
+
+    float4 color = tex0.Sample(samp, uv);
+    if (color.a < 0.001) return color;
+
+    // ノイズ領域の開始Y位置（画面下端から）
+    float baseStart = texH - noiseHeight;
+    float fluc = sin(effFrame * 1.3) * fluctuation + cos(effFrame * 0.7) * fluctuation * 0.5;
+    float noiseStart = baseStart + fluc;
+
+    // ノイズ領域内の相対位置 (0.0=境界, 1.0=最下端)
+    float t = (pos.y - noiseStart) / max(noiseHeight, 1.0);
+
+    if (t <= 0.0) return color;
+
+    t = saturate(t);
+
+    // 乗算済みα解除
+    float3 rgb = color.rgb / color.a;
+
+    // 水平歪み（下に行くほど強い: 二次関数）
+    float distortAmount = distortion * t * t;
+    float rowNoise = hash(float2(pos.y, effFrame)) - 0.5;
+    float xOffset = distortAmount * rowNoise / texW;
+    float2 distortedUV = uv + float2(xOffset, 0.0);
+    distortedUV = clamp(distortedUV, float2(0, 0), float2(1, 1));
+
+    float4 distortedSample = tex0.Sample(samp, distortedUV);
+    float3 distortedRGB = (distortedSample.a > 0.001) ? distortedSample.rgb / distortedSample.a : float3(0, 0, 0);
+
+    // ノイズテクスチャ合成
+    float noise = hash(pos.xy + effFrame * 7.13) * noiseDensity;
+    float3 noiseColor = float3(noise, noise, noise);
+
+    // 歪み画像とノイズの混合（下端ほどノイズ優位）
+    float3 result = lerp(distortedRGB, noiseColor, t * 0.6);
+
+    // 色化け（色差チャンネルの乱れ）
+    if (colorCorrupt > 0.5) {
+        float cNoise1 = (hash(pos.xy * 1.1 + effFrame * 3.0) - 0.5) * t * 0.4;
+        float cNoise2 = (hash(pos.xy * 1.2 + effFrame * 5.0) - 0.5) * t * 0.4;
+        result.r += cNoise1;
+        result.g += cNoise2;
+        result.b -= cNoise1 * 0.5;
+    }
+
+    result = saturate(result);
+
+    // 境界付近のフェード（急激に切り替わらないようにスムーズに遷移）
+    float edgeFade = smoothstep(0.0, 0.15, t);
+    result = lerp(rgb, result, edgeFade);
+
+    // 強度（透明度）による最終ブレンド
+    result = lerp(rgb, result, intensity);
+
+    // 乗算済みαに戻す
+    return float4(result * color.a, color.a);
+}
+]]
+
+--track@noise_height:ノイズ高さ,0,100,45
+--track@distortion:歪み量,0.0,100.0,50.0,0.1
+--track@noise_density:ノイズ密度,0.00,1.00,0.10,0.01
+--check@color_corrupt:色化け,false
+--track@fluctuation:揺らぎ,0.0,5.0,2.5,0.1
+--track@intensity:強度,0.0,1.0,1.0,0.01
+
+-- スケーリング
+local _scale = obj.h / 480.0
+local height_scaled = noise_height * _scale
+local distort_scaled = distortion * _scale
+local fluc_scaled = fluctuation * _scale
+
+-- 時間変動
+local eff_frame = math.floor(obj.time * obj.framerate)
+if CC_RE_QUANTIZED_FRAME then
+    eff_frame = CC_RE_QUANTIZED_FRAME
+end
+
+local corrupt_flag = color_corrupt and 1.0 or 0.0
+
+obj.pixelshader("ps_head_switch", "object", "object", {
+    height_scaled, distort_scaled, noise_density, corrupt_flag,
+    fluc_scaled, intensity, eff_frame, 0,
+    obj.w, obj.h, 0, 0
+}, "copy", "clamp")

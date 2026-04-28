@@ -1,0 +1,93 @@
+--script:luaJIT
+--information:02.色調補正＠CC-RE
+--label:CC-RetroEffect
+--filter
+--require:2003800
+
+--[[pixelshader@ps_color_filter:
+Texture2D tex0 : register(t0);
+SamplerState samp : register(s0);
+
+cbuffer Constants : register(b0) {
+    float4 params[3];
+};
+
+float4 ps_color_filter(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
+    float contrast   = params[0].x;
+    float brightness = params[0].y;
+    float saturation = params[0].z;
+    float colorTemp  = params[0].w;
+    float toneLow    = params[1].x;
+    float toneHigh   = params[1].y;
+    float castEnable = params[1].z;
+    float castR      = params[2].x;
+    float castG      = params[2].y;
+    float castB      = params[2].z;
+
+    float4 color = tex0.Sample(samp, uv);
+    if (color.a < 0.001) return color;
+
+    // 乗算済みαを解除
+    float3 rgb = color.rgb / color.a;
+
+    // トーンカーブ（黒潰れ/白飛び）
+    float range = max(toneHigh - toneLow, 0.001);
+    rgb = saturate((rgb - toneLow) / range);
+
+    // コントラスト調整（中間グレー基準）
+    float contrastFactor = 1.0 + contrast / 100.0;
+    rgb = (rgb - 0.5) * contrastFactor + 0.5;
+
+    // 輝度調整
+    rgb = rgb + brightness / 255.0;
+
+    // 彩度調整
+    float luma = dot(rgb, float3(0.299, 0.587, 0.114));
+    float satFactor = 1.0 + saturation / 100.0;
+    rgb = lerp(float3(luma, luma, luma), rgb, satFactor);
+
+    // 色温度シフト（暖色+/寒色-）
+    float tempShift = colorTemp / 100.0;
+    rgb.r += tempShift * 0.1;
+    rgb.b -= tempShift * 0.1;
+
+    // カラーキャスト
+    if (castEnable > 0.5) {
+        rgb.r *= castR;
+        rgb.g *= castG;
+        rgb.b *= castB;
+    }
+
+    rgb = saturate(rgb);
+
+    // 乗算済みαに戻す
+    return float4(rgb * color.a, color.a);
+}
+]]
+
+--group:基本補正
+--track@contrast:コントラスト,-100,100,-15
+--track@brightness:輝度,-100,100,5
+--track@saturation:彩度,-100,100,20
+--track@color_temp:色温度,-100,100,10
+--group
+
+--group:トーンカーブ
+--track@tone_low:黒潰れ,0,50,30
+--track@tone_high:白飛び,200,255,245
+--group
+
+--group:色かぶり
+--check@cast_enable:色かぶり有効,true
+--track@cast_r:色かぶりR,0.80,1.20,0.95,0.01
+--track@cast_g:色かぶりG,0.80,1.20,1.05,0.01
+--track@cast_b:色かぶりB,0.80,1.20,1.02,0.01
+--group
+
+local cast_flag = cast_enable and 1.0 or 0.0
+
+obj.pixelshader("ps_color_filter", "object", "object", {
+    contrast, brightness, saturation, color_temp,
+    tone_low / 255.0, tone_high / 255.0, cast_flag, 0,
+    cast_r, cast_g, cast_b, 0
+}, "copy", "clamp")

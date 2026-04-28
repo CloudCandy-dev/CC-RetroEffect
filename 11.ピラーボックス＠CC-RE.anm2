@@ -1,0 +1,97 @@
+--script:luaJIT
+--information:11.ピラーボックス＠CC-RE
+--label:CC-RetroEffect
+--filter
+--require:2003800
+
+--[[pixelshader@ps_pillarbox:
+Texture2D tex0 : register(t0);
+SamplerState samp : register(s0);
+
+cbuffer Constants : register(b0) {
+    float4 params[3];
+};
+
+float hash(float2 p) {
+    float3 p3 = frac(float3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return frac((p3.x + p3.y) * p3.z);
+}
+
+float4 ps_pillarbox(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
+    float bandWidth    = params[0].x;
+    float angle        = params[0].y;
+    float blurBorder   = params[0].z;
+    float distortEn    = params[0].w;
+    float distortAmt   = params[1].x;
+    float bandR        = params[1].y;
+    float bandG        = params[1].z;
+    float bandB        = params[1].w;
+    float texW         = params[2].x;
+    float texH         = params[2].y;
+    float effFrame     = params[2].z;
+
+    // 角度を考慮した帯の境界X座標
+    float angleRad = angle * 3.14159265 / 180.0;
+    float angleOffset = tan(angleRad) * (pos.y - texH * 0.5);
+    float leftEdge = bandWidth + angleOffset;
+    float rightEdge = texW - bandWidth - angleOffset;
+
+    // 境界からの距離
+    float distFromLeft = pos.x - leftEdge;
+    float distFromRight = rightEdge - pos.x;
+    float distFromEdge = min(distFromLeft, distFromRight);
+
+    // ぼかし境界（smoothstep）
+    float borderW = max(blurBorder, 0.5);
+    float mask = smoothstep(-borderW, borderW, distFromEdge);
+
+    // 端部歪み
+    float2 finalUV = uv;
+    if (distortEn > 0.5 && abs(distFromEdge) < borderW * 4.0) {
+        float distortFactor = 1.0 - smoothstep(0.0, borderW * 4.0, abs(distFromEdge));
+        finalUV.x += sin(pos.y * 0.08 + effFrame * 0.5) * distortAmt * distortFactor / texW;
+    }
+
+    finalUV = clamp(finalUV, float2(0, 0), float2(1, 1));
+    float4 imageColor = tex0.Sample(samp, finalUV);
+
+    // 帯の色（乗算済みα空間: 帯はα=1で完全不透明）
+    float4 bandColor = float4(bandR * imageColor.a, bandG * imageColor.a, bandB * imageColor.a, imageColor.a);
+
+    return lerp(bandColor, imageColor, mask);
+}
+]]
+
+--track@band_width:帯幅,0,200,100
+--track@angle:角度,-5.0,5.0,0.5,0.1
+--track@blur_border:ぼかし境界,0.0,20.0,5.0,0.1
+--color@band_color:帯の色,0x000000
+--check@distort_enable:端部歪み,true
+--track@distort_amount:端部歪み量,0.0,5.0,0.5,0.1
+
+-- スケーリング
+local _scale = obj.h / 480.0
+local width_scaled = band_width * _scale
+local border_scaled = blur_border * _scale
+local distort_scaled = distort_amount * _scale
+
+-- 帯の色をRGB(0-1)に変換
+local br, bg, bb = RGB(band_color)
+br = br / 255.0
+bg = bg / 255.0
+bb = bb / 255.0
+
+-- 時間変動
+local eff_frame = math.floor(obj.time * obj.framerate)
+if CC_RE_QUANTIZED_FRAME then
+    eff_frame = CC_RE_QUANTIZED_FRAME
+end
+
+local distort_flag = distort_enable and 1.0 or 0.0
+
+obj.pixelshader("ps_pillarbox", "object", "object", {
+    width_scaled, angle, border_scaled, distort_flag,
+    distort_scaled, br, bg, bb,
+    obj.w, obj.h, eff_frame, 0
+}, "copy", "clamp")

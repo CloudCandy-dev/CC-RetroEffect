@@ -1,0 +1,73 @@
+--script:luaJIT
+--information:12.走査線＠CC-RE
+--label:CC-RetroEffect
+--filter
+--require:2003800
+
+--[[pixelshader@ps_scanline:
+Texture2D tex0 : register(t0);
+SamplerState samp : register(s0);
+
+cbuffer Constants : register(b0) {
+    float4 params[2];
+};
+
+float4 ps_scanline(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
+    float lineWidth      = params[0].x;
+    float lineBrightness = params[0].y;
+    float lineSpacing    = params[0].z;
+    float flickerEnable  = params[1].x;
+    float flickerAmount  = params[1].y;
+    float effFrame       = params[1].z;
+
+    float4 color = tex0.Sample(samp, uv);
+    if (color.a < 0.001) return color;
+
+    // 1周期のピクセル数
+    float period = lineWidth + lineSpacing;
+
+    // フリッカーオフセット（インターレース風）
+    float flickerOffset = 0.0;
+    if (flickerEnable > 0.5) {
+        float interlace = fmod(floor(effFrame), 2.0);
+        flickerOffset = interlace * period * flickerAmount;
+    }
+
+    // Y座標から走査線の位相を計算
+    float y = pos.y + flickerOffset;
+    float phase = fmod(fmod(y, period) + period, period);
+
+    // 暗部ラインの判定（走査線幅の範囲内）
+    // smoothstepで滑らかに遷移させてエイリアシング軽減
+    float edge = 0.5;
+    float scanWeight = smoothstep(lineWidth - edge, lineWidth + edge, phase);
+    scanWeight = lerp(lineBrightness, 1.0, scanWeight);
+
+    // 走査線適用（乗算済みαのままでOK: RGB全体をスケール）
+    return float4(color.rgb * scanWeight, color.a);
+}
+]]
+
+--track@line_width:走査線太さ,1.0,8.0,1.6,0.1
+--track@line_brightness:走査線明るさ,0.50,1.00,0.90,0.01
+--track@line_spacing:走査線間隔,1.0,8.0,2.0,0.1
+--check@flicker_enable:フリッカー,true
+--track@flicker_amount:フリッカー量,0.00,1.00,1.00,0.01
+
+-- スケーリング
+local _scale = obj.h / 480.0
+local width_scaled = line_width * _scale
+local spacing_scaled = line_spacing * _scale
+
+-- 時間変動
+local eff_frame = math.floor(obj.time * obj.framerate)
+if CC_RE_QUANTIZED_FRAME then
+    eff_frame = CC_RE_QUANTIZED_FRAME
+end
+
+local flicker_flag = flicker_enable and 1.0 or 0.0
+
+obj.pixelshader("ps_scanline", "object", "object", {
+    width_scaled, line_brightness, spacing_scaled, 0,
+    flicker_flag, flicker_amount, eff_frame, obj.h
+}, "copy", "clamp")

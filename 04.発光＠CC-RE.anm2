@@ -1,0 +1,181 @@
+--script:luaJIT
+--information:04.発光＠CC-RE
+--label:CC-RetroEffect
+--filter
+--require:2003800
+
+--[[pixelshader@ps_glow_extract:
+Texture2D tex0 : register(t0);
+SamplerState samp : register(s0);
+
+cbuffer Constants : register(b0) {
+    float4 params[1];
+};
+
+float4 ps_glow_extract(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
+    float threshold = params[0].x;
+
+    float4 color = tex0.Sample(samp, uv);
+    if (color.a < 0.001) return float4(0, 0, 0, 0);
+
+    float3 rgb = color.rgb / color.a;
+    float luma = dot(rgb, float3(0.299, 0.587, 0.114));
+
+    // しきい値以上の輝度のみ抽出
+    float t = smoothstep(threshold - 0.05, threshold + 0.05, luma);
+    float3 extracted = rgb * t;
+
+    return float4(extracted * color.a, color.a * t);
+}
+]]
+
+--[[pixelshader@ps_glow_blur_h:
+Texture2D tex0 : register(t0);
+SamplerState samp : register(s0);
+
+cbuffer Constants : register(b0) {
+    float4 params[1];
+};
+
+float4 ps_glow_blur_h(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
+    float radius = params[0].x;
+    float texW   = params[0].y;
+
+    if (radius < 0.5) return tex0.Sample(samp, uv);
+
+    // 13-tap Gaussian, sigma = radius/3, step = radius/6
+    // Tap positions in sigma: -3, -2.5, -2, -1.5, -1, -0.5, 0, 0.5, 1, 1.5, 2, 2.5, 3
+    float step = radius / 6.0 / texW;
+
+    float4 c0  = tex0.Sample(samp, float2(uv.x - 6.0 * step, uv.y));
+    float4 c1  = tex0.Sample(samp, float2(uv.x - 5.0 * step, uv.y));
+    float4 c2  = tex0.Sample(samp, float2(uv.x - 4.0 * step, uv.y));
+    float4 c3  = tex0.Sample(samp, float2(uv.x - 3.0 * step, uv.y));
+    float4 c4  = tex0.Sample(samp, float2(uv.x - 2.0 * step, uv.y));
+    float4 c5  = tex0.Sample(samp, float2(uv.x - step, uv.y));
+    float4 c6  = tex0.Sample(samp, uv);
+    float4 c7  = tex0.Sample(samp, float2(uv.x + step, uv.y));
+    float4 c8  = tex0.Sample(samp, float2(uv.x + 2.0 * step, uv.y));
+    float4 c9  = tex0.Sample(samp, float2(uv.x + 3.0 * step, uv.y));
+    float4 c10 = tex0.Sample(samp, float2(uv.x + 4.0 * step, uv.y));
+    float4 c11 = tex0.Sample(samp, float2(uv.x + 5.0 * step, uv.y));
+    float4 c12 = tex0.Sample(samp, float2(uv.x + 6.0 * step, uv.y));
+
+    // Pre-computed Gaussian weights: exp(-0.5 * (pos_sigma)^2)
+    // ±3σ=0.0111, ±2.5σ=0.0439, ±2σ=0.1353, ±1.5σ=0.3247, ±σ=0.6065, ±0.5σ=0.8825, 0=1.0
+    return (c0 * 0.0111 + c1 * 0.0439 + c2 * 0.1353 + c3 * 0.3247
+          + c4 * 0.6065 + c5 * 0.8825 + c6 * 1.0
+          + c7 * 0.8825 + c8 * 0.6065 + c9 * 0.3247
+          + c10 * 0.1353 + c11 * 0.0439 + c12 * 0.0111) / 5.008;
+}
+]]
+
+--[[pixelshader@ps_glow_blur_v:
+Texture2D tex0 : register(t0);
+SamplerState samp : register(s0);
+
+cbuffer Constants : register(b0) {
+    float4 params[1];
+};
+
+float4 ps_glow_blur_v(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
+    float radius = params[0].x;
+    float texH   = params[0].z;
+
+    if (radius < 0.5) return tex0.Sample(samp, uv);
+
+    // 13-tap Gaussian, sigma = radius/3, step = radius/6
+    float step = radius / 6.0 / texH;
+
+    float4 c0  = tex0.Sample(samp, float2(uv.x, uv.y - 6.0 * step));
+    float4 c1  = tex0.Sample(samp, float2(uv.x, uv.y - 5.0 * step));
+    float4 c2  = tex0.Sample(samp, float2(uv.x, uv.y - 4.0 * step));
+    float4 c3  = tex0.Sample(samp, float2(uv.x, uv.y - 3.0 * step));
+    float4 c4  = tex0.Sample(samp, float2(uv.x, uv.y - 2.0 * step));
+    float4 c5  = tex0.Sample(samp, float2(uv.x, uv.y - step));
+    float4 c6  = tex0.Sample(samp, uv);
+    float4 c7  = tex0.Sample(samp, float2(uv.x, uv.y + step));
+    float4 c8  = tex0.Sample(samp, float2(uv.x, uv.y + 2.0 * step));
+    float4 c9  = tex0.Sample(samp, float2(uv.x, uv.y + 3.0 * step));
+    float4 c10 = tex0.Sample(samp, float2(uv.x, uv.y + 4.0 * step));
+    float4 c11 = tex0.Sample(samp, float2(uv.x, uv.y + 5.0 * step));
+    float4 c12 = tex0.Sample(samp, float2(uv.x, uv.y + 6.0 * step));
+
+    return (c0 * 0.0111 + c1 * 0.0439 + c2 * 0.1353 + c3 * 0.3247
+          + c4 * 0.6065 + c5 * 0.8825 + c6 * 1.0
+          + c7 * 0.8825 + c8 * 0.6065 + c9 * 0.3247
+          + c10 * 0.1353 + c11 * 0.0439 + c12 * 0.0111) / 5.008;
+}
+]]
+
+--[[pixelshader@ps_glow_composite:
+Texture2D tex0 : register(t0);
+Texture2D tex1 : register(t1);
+SamplerState samp : register(s0);
+
+cbuffer Constants : register(b0) {
+    float4 params[2];
+};
+
+float4 ps_glow_composite(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
+    float intensity     = params[0].x;
+    float glowR         = params[0].y;
+    float glowG         = params[0].z;
+    float glowB         = params[0].w;
+    float colorStrength = params[1].x;
+
+    float4 original = tex0.Sample(samp, uv);
+    float4 glow = tex1.Sample(samp, uv);
+
+    // 発光色の適用
+    float3 glowColor = float3(glowR, glowG, glowB);
+    float3 glowRGB = lerp(glow.rgb, glow.rgb * glowColor, colorStrength);
+
+    // 加算合成（乗算済みα空間で直接加算）
+    float3 result = original.rgb + glowRGB * intensity;
+
+    // 乗算済みα不変条件の保護 (RGB ≤ A)
+    result = min(result, float3(original.a, original.a, original.a));
+
+    return float4(result, original.a);
+}
+]]
+
+--track@threshold:しきい値,0,255,160
+--track@glow_intensity:発光強度,0.0,5.0,0.3,0.1
+--track@blur_radius:拡散範囲,1,50,15
+--color@glow_color:発光色,0xFFEEDD
+--track@color_strength:色付き強度,0.0,1.0,0.2,0.01
+
+-- スケーリング
+local _scale = obj.h / 480.0
+local radius_scaled = blur_radius * _scale
+
+-- 発光色をRGB(0-1)に変換
+local gr, gg, gb = RGB(glow_color)
+gr = gr / 255.0
+gg = gg / 255.0
+gb = gb / 255.0
+
+-- パス1: 輝度抽出 → tempbuffer
+obj.copybuffer("tempbuffer", "object")
+obj.pixelshader("ps_glow_extract", "tempbuffer", "object", {
+    threshold / 255.0, 0, 0, 0
+}, "copy", "clamp")
+
+-- パス2: 水平ブラー tempbuffer → cache:glow_h
+obj.copybuffer("cache:cc_re_glow_h", "tempbuffer")
+obj.pixelshader("ps_glow_blur_h", "cache:cc_re_glow_h", "tempbuffer", {
+    radius_scaled, obj.w, obj.h, 0
+}, "copy", "clamp")
+
+-- パス3: 垂直ブラー cache:glow_h → tempbuffer
+obj.pixelshader("ps_glow_blur_v", "tempbuffer", "cache:cc_re_glow_h", {
+    radius_scaled, obj.w, obj.h, 0
+}, "copy", "clamp")
+
+-- パス4: 合成 (元画像 + ぼかし発光)
+obj.pixelshader("ps_glow_composite", "object", {"object", "tempbuffer"}, {
+    glow_intensity, gr, gg, gb,
+    color_strength, 0, 0, 0
+}, "copy", "clamp")

@@ -1,0 +1,53 @@
+--script:luaJIT
+--information:01.コマ落ち＠CC-RE
+--label:CC-RetroEffect
+--filter
+--require:2003800
+
+--track@target_fps:目標フレームレート,1,60,15
+--check@random_vary:ランダム変動,false
+--track@vary_range:変動幅,0,5,1
+
+local project_fps = obj.framerate
+local current_frame = math.floor(obj.time * project_fps)
+
+if target_fps >= project_fps then
+    CC_RE_QUANTIZED_FRAME = nil
+    return
+end
+
+local interval = math.max(1, math.floor(project_fps / target_fps))
+
+if random_vary then
+    local seed = math.floor(current_frame / interval) * 17
+    math.randomseed(seed)
+    interval = math.max(1, interval + math.random(0, math.floor(vary_range)))
+end
+
+local quantized_frame = math.floor(current_frame / interval) * interval
+CC_RE_QUANTIZED_FRAME = quantized_frame
+
+-- フレームフリーズ: FFIでピクセルデータをフレーム間保持
+local ffi_ok, ffi = pcall(require, "ffi")
+if ffi_ok then
+    if current_frame == quantized_frame then
+        -- キーフレーム: 現在の画像を保存
+        local data, w, h = obj.getpixeldata("object")
+        if data then
+            local size = w * h * 4
+            CC_RE_FD_BUF = ffi.new("uint8_t[?]", size)
+            ffi.copy(CC_RE_FD_BUF, data, size)
+            CC_RE_FD_W = w
+            CC_RE_FD_H = h
+        end
+    else
+        -- ドロップフレーム: 保存した画像で上書き
+        if CC_RE_FD_BUF and CC_RE_FD_W and CC_RE_FD_W > 0 then
+            local data, w, h = obj.getpixeldata("object")
+            if data and w == CC_RE_FD_W and h == CC_RE_FD_H then
+                ffi.copy(data, CC_RE_FD_BUF, w * h * 4)
+                obj.putpixeldata("object", data, w, h)
+            end
+        end
+    end
+end

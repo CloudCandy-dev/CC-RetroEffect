@@ -1,0 +1,81 @@
+--script:luaJIT
+--information:09.ジッター＠CC-RE
+--label:CC-RetroEffect
+--filter
+--require:2003800
+
+--[[pixelshader@ps_jitter:
+Texture2D tex0 : register(t0);
+SamplerState samp : register(s0);
+
+cbuffer Constants : register(b0) {
+    float4 params[2];
+};
+
+float hash(float2 p) {
+    float3 p3 = frac(float3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return frac((p3.x + p3.y) * p3.z);
+}
+
+float4 ps_jitter(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
+    float jitterFreq  = params[0].x;
+    float jitterAmp   = params[0].y;
+    float jitterRough = params[0].z;
+    float vertShake   = params[0].w;
+    float timeSpeed   = params[1].x;
+    float effFrame    = params[1].y;
+    float texW        = params[1].z;
+    float texH        = params[1].w;
+
+    // 時間パラメータ
+    float time = effFrame * timeSpeed;
+    float frameIndex = floor(time);
+
+    // ライン単位のラフネスを適用
+    float roughStep = max(jitterRough, 0.5);
+    float quantizedY = floor(pos.y / roughStep);
+
+    // 低周波揺れ（フレームごとにランダムオフセット + サイン波でうねり）
+    float frameSeed = hash(float2(frameIndex * 0.37, 0.123));
+    float lowFreq = sin(uv.y * jitterFreq * 100.0 + frameSeed * 50.0) * jitterAmp;
+
+    // 高周波揺れ（行ごと × フレームごとのランダム = ジャギー感）
+    float highFreq = (hash(float2(quantizedY * 0.01, frameIndex * 0.71)) - 0.5) * jitterAmp;
+
+    // 水平変位（ピクセル → UV）
+    float xDisplace = (lowFreq + highFreq) / texW;
+
+    // 垂直揺れ（フレームごとにランダム）
+    float yNoise = (hash(float2(frameIndex * 1.23, 0.456)) - 0.5) * 2.0;
+    float yDisplace = yNoise * vertShake / texH;
+
+    float2 displacedUV = uv + float2(xDisplace, yDisplace);
+    displacedUV = clamp(displacedUV, float2(0, 0), float2(1, 1));
+
+    return tex0.Sample(samp, displacedUV);
+}
+]]
+
+--track@jitter_freq:ジッター周波数,0.01,0.20,0.05,0.01
+--track@jitter_amp:ジッター振幅,0.0,5.0,0.5,0.1
+--track@jitter_rough:ジッター粗さ,0.3,10.0,0.3,0.01
+--track@vert_shake:垂直揺れ,0.0,3.0,0.5,0.1
+--track@time_speed:時間変動速度,0.1,5.0,1.0,0.1
+
+-- スケーリング
+local _scale = obj.h / 480.0
+local amp_scaled = jitter_amp * _scale
+local rough_scaled = jitter_rough * _scale
+local vert_scaled = vert_shake * _scale
+
+-- 時間変動
+local eff_frame = math.floor(obj.time * obj.framerate)
+if CC_RE_QUANTIZED_FRAME then
+    eff_frame = CC_RE_QUANTIZED_FRAME
+end
+
+obj.pixelshader("ps_jitter", "object", "object", {
+    jitter_freq, amp_scaled, rough_scaled, vert_scaled,
+    time_speed, eff_frame, obj.w, obj.h
+}, "copy", "clamp")
