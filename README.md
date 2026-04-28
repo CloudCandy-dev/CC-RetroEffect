@@ -1,4 +1,6 @@
 # CC-RetroEffect
+このプロジェクトは現在βテスト中です。
+もし不具合等を発見した場合はCloudCandyのXのDMまでお願いします。
 
 **平成初期 VHS / ブラウン管レトロエフェクトパック for AviUtl ExEdit2**
 
